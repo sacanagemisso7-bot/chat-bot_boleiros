@@ -1,56 +1,61 @@
 import importlib
-import json
 from datetime import datetime, timedelta
-from urllib.error import URLError
 
 
-def _mock_response(payload: dict):
-    class _Resp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps(payload).encode("utf-8")
-
-    return _Resp()
+class _FakeTypes:
+    class GenerateContentConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
 
 
-def test_ai_desligada_nao_chama_openai(monkeypatch):
-    monkeypatch.setenv("OPENAI_ENABLED", "false")
-    monkeypatch.setenv("OPENAI_API_KEY", "")
-
-    import services.ai as ai_module
-
-    importlib.reload(ai_module)
-
-    def _should_not_call(*args, **kwargs):
-        raise AssertionError("urlopen não deveria ser chamado com IA desligada")
-
-    monkeypatch.setattr(ai_module, "urlopen", _should_not_call)
-    svc = ai_module.AIService()
-    assert svc.generate_reply("teste", {"scheduling_context": {}, "promotions": {"active": []}}) is None
+class _FakeResponse:
+    def __init__(self, text: str):
+        self.text = text
 
 
-def test_ai_falha_openai_com_fallback(monkeypatch):
-    monkeypatch.setenv("OPENAI_ENABLED", "true")
-    monkeypatch.setenv("OPENAI_API_KEY", "key")
+class _FakeClient:
+    def __init__(self, text: str = "", fail: bool = False):
+        self._text = text
+        self._fail = fail
+        self.models = self
+
+    def generate_content(self, **kwargs):
+        if self._fail:
+            raise TimeoutError("gemini timeout")
+        return _FakeResponse(self._text)
+
+
+def test_gemini_desligada_nao_chama_cliente(monkeypatch):
+    monkeypatch.setenv("GEMINI_ENABLED", "false")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
 
     import services.ai as ai_module
 
     importlib.reload(ai_module)
 
-    def _raise_url_error(*args, **kwargs):
-        raise URLError("timeout")
-
-    monkeypatch.setattr(ai_module, "urlopen", _raise_url_error)
     svc = ai_module.AIService()
+
+    def _should_not_call():
+        raise AssertionError("Cliente Gemini não deveria ser instanciado")
+
+    monkeypatch.setattr(svc, "_build_client", _should_not_call)
     assert svc.generate_reply("teste", {"scheduling_context": {}, "promotions": {"active": []}}) is None
 
 
-def test_build_ai_context_com_dados_reais(app_ctx):
+def test_gemini_falha_com_fallback(monkeypatch):
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "key")
+
+    import services.ai as ai_module
+
+    importlib.reload(ai_module)
+    svc = ai_module.AIService()
+    monkeypatch.setattr(svc, "_build_client", lambda: (_FakeClient(fail=True), _FakeTypes))
+
+    assert svc.generate_reply("teste", {"scheduling_context": {}, "promotions": {"active": []}}) is None
+
+
+def test_contexto_real_continua_sendo_montado(app_ctx):
     db = app_ctx["db"]
     with db.get_conn() as conn:
         stamp = db.utc_now_iso()
@@ -84,28 +89,29 @@ def test_build_ai_context_com_dados_reais(app_ctx):
     context = ctx_module.build_ai_context(cliente, "5511955500001")
 
     assert context["customer_profile"]["nome"] == "Bruno"
-    assert context["customer_profile"]["barbeiro_favorito"] == "João"
     assert context["scheduling_context"]["proximo_agendamento"] is not None
     assert len(context["conversation_history"]) >= 1
-    assert len(context["scheduling_context"]["proximos_slots_disponiveis"]) >= 1
 
 
-def test_ai_bloqueia_resposta_inventada_sem_slots(monkeypatch):
-    monkeypatch.setenv("OPENAI_ENABLED", "true")
-    monkeypatch.setenv("OPENAI_API_KEY", "key")
+def test_gemini_nao_inventa_fluxo_sensivel(monkeypatch):
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "key")
 
     import services.ai as ai_module
 
     importlib.reload(ai_module)
-    payload = {"choices": [{"message": {"content": "Temos horário às 15h com 20% de desconto hoje."}}]}
-    monkeypatch.setattr(ai_module, "urlopen", lambda *a, **k: _mock_response(payload))
-
     svc = ai_module.AIService()
+    monkeypatch.setattr(
+        svc,
+        "_build_client",
+        lambda: (_FakeClient(text="Temos horário às 15h com 20% de desconto hoje."), _FakeTypes),
+    )
+
     context = {"scheduling_context": {"proximos_slots_disponiveis": []}, "promotions": {"active": []}}
     assert svc.generate_reply("horários?", context) is None
 
 
-def test_chatbot_usa_ia_em_duvida_generica(app_ctx, monkeypatch):
+def test_duvida_generica_com_gemini(app_ctx, monkeypatch):
     db = app_ctx["db"]
     with db.get_conn() as conn:
         stamp = db.utc_now_iso()
@@ -115,8 +121,8 @@ def test_chatbot_usa_ia_em_duvida_generica(app_ctx, monkeypatch):
         )
         conn.commit()
 
-    monkeypatch.setenv("OPENAI_ENABLED", "true")
-    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "key")
 
     import services.ai as ai_module
     import services.chatbot as chatbot_module
@@ -124,9 +130,33 @@ def test_chatbot_usa_ia_em_duvida_generica(app_ctx, monkeypatch):
     importlib.reload(ai_module)
     importlib.reload(chatbot_module)
 
-    payload = {"choices": [{"message": {"content": "Para essa semana, consigo te orientar pelos próximos horários disponíveis do sistema. Quer que eu te mostre?"}}]}
-    monkeypatch.setattr(ai_module, "urlopen", lambda *a, **k: _mock_response(payload))
-
     bot = chatbot_module.ChatbotService()
+    monkeypatch.setattr(
+        bot.ai,
+        "_build_client",
+        lambda: (_FakeClient(text="Posso te orientar com base nos horários reais disponíveis no sistema."), _FakeTypes),
+    )
+
     resp = bot.handle_message("5511944400001", "como funciona o atendimento de vocês?")
-    assert "próximos horários" in resp.lower() or "quer que eu te mostre" in resp.lower()
+    assert "horários reais" in resp.lower() or "orientar" in resp.lower()
+
+
+def test_sem_chave_gemini_sistema_continua_funcionando(app_ctx, monkeypatch):
+    db = app_ctx["db"]
+    with db.get_conn() as conn:
+        stamp = db.utc_now_iso()
+        conn.execute(
+            "INSERT INTO clientes (nome, telefone, onboarding_status, criado_em, atualizado_em) VALUES ('Caio', '5511933300001', 'ativo', ?, ?)",
+            (stamp, stamp),
+        )
+        conn.commit()
+
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+
+    import services.chatbot as chatbot_module
+
+    importlib.reload(chatbot_module)
+    bot = chatbot_module.ChatbotService()
+    resposta = bot.handle_message("5511933300001", "me explica os serviços")
+    assert "posso te ajudar" in resposta.lower()

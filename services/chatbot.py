@@ -131,7 +131,7 @@ class ChatbotService:
             return f"Olá, {nome_curto}! Posso te ajudar com agendamento, remarcação, cancelamento, promoções ou atendimento humano."
 
         # IA apenas como complemento em dúvidas gerais após fluxos determinísticos.
-        max_ctx = int(os.getenv("OPENAI_MAX_CONTEXT_MESSAGES", "8"))
+        max_ctx = int(os.getenv("GEMINI_MAX_CONTEXT_MESSAGES", os.getenv("OPENAI_MAX_CONTEXT_MESSAGES", "8")))
         ai_context = build_ai_context(cliente, phone, max_history=max_ctx)
         ai_reply = self.ai.generate_reply(inbound_text, ai_context)
         if ai_reply:

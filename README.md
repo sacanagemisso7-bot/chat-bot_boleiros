@@ -1,20 +1,13 @@
 # Chatbot WhatsApp para Barbearia (MVP)
 
-MVP funcional em **Python + FastAPI + SQLite** integrado com **Meta WhatsApp Cloud API**, com:
-- onboarding real de novos clientes,
-- histórico persistente de mensagens,
-- fluxo de agendamento/remarcação/cancelamento com disponibilidade real,
-- handoff para humano,
-- deduplicação/idempotência de eventos do webhook,
-- integração opcional com OpenAI com fallback robusto para regras.
+MVP em **Python + FastAPI + SQLite** com **Meta WhatsApp Cloud API** e camada de IA opcional via **Gemini**.
 
-## Estrutura de pastas
+## Estrutura
 
 ```text
 .
 ├── app.py
 ├── db.py
-├── seed_clientes.py
 ├── services/
 │   ├── ai.py
 │   ├── ai_context.py
@@ -32,7 +25,7 @@ MVP funcional em **Python + FastAPI + SQLite** integrado com **Meta WhatsApp Clo
 └── README.md
 ```
 
-## Instalação e execução local
+## Rodando localmente
 
 ```bash
 python -m venv .venv
@@ -43,71 +36,64 @@ python seed_clientes.py --reset
 uvicorn app:app --reload --port 8000
 ```
 
-Healthcheck:
-- `GET /health`
+## Configuração da Gemini
 
-## Variáveis de ambiente
+1. Gere chave em **Google AI Studio** (Gemini API key).
+2. Configure no `.env`:
+   - `GEMINI_ENABLED=true`
+   - `GEMINI_API_KEY=<sua_chave>`
+   - `GEMINI_MODEL=gemini-2.5-flash` (ou outro)
+   - `GEMINI_TIMEOUT_SECONDS=20`
+   - `GEMINI_MAX_CONTEXT_MESSAGES=8`
+   - `GEMINI_TEMPERATURE=0.2`
 
-### IA opcional (OpenAI)
-- `OPENAI_ENABLED=true|false`
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL` (default `gpt-5.4-mini`)
-- `OPENAI_TIMEOUT_SECONDS` (default `20`)
-- `OPENAI_MAX_CONTEXT_MESSAGES` (default `8`)
-- `OPENAI_TEMPERATURE` (default `0.2`)
+Se `GEMINI_ENABLED=false` (ou sem chave), o bot segue em fallback determinístico por regras.
 
-Se IA estiver desligada (ou falhar), o bot segue funcionando por regras/fluxos determinísticos.
+## Como a IA funciona sem quebrar fluxos críticos
 
-### Endpoints de debug
-- `DEBUG_ENDPOINTS_ENABLED=true|false`
-- Se `false`: endpoints `/debug/*` retornam `404`.
+- Onboarding, agendamento, escolha de slot, confirmação, cancelamento e handoff humano continuam determinísticos.
+- A Gemini é usada apenas em dúvidas abertas/complementares.
+- Se a Gemini falhar (timeout/erro), o bot cai no fallback sem quebrar webhook.
 
-## Como a IA usa contexto real
+## Contexto real enviado para Gemini
 
-A camada de IA foi separada em:
-- `services/ai_context.py`: monta contexto estruturado com dados reais do banco.
-- `services/ai_prompt.py`: prompt fixo + payload estruturado com regras e limites.
-- `services/ai.py`: integração OpenAI, timeout, logs e fallback seguro.
+A função `build_ai_context(...)` envia contexto estruturado com dados reais:
+- perfil do cliente,
+- estado da conversa,
+- histórico recente,
+- próximo/últimos agendamentos,
+- slots reais disponíveis,
+- promoções reais (ou vazio quando não houver).
 
-Contexto enviado inclui:
-- perfil real do cliente (`nome`, `telefone`, `onboarding_status`, `barbeiro_favorito`, `preferencia`, `observacoes`),
-- estado atual da conversa (`conversa_estado`, handoff humano),
-- próximo agendamento e últimos agendamentos,
-- últimas mensagens relevantes,
-- próximos slots reais disponíveis,
-- promoções ativas reais (atualmente lista vazia se não houver cadastro).
+## Guardrails anti-invenção
 
-## Regras de segurança da IA
+- Prompt reforça que a IA não pode inventar dados.
+- Respostas são rejeitadas quando não há lastro no contexto (ex.: sugerir horário sem slots ou promoção sem promo ativa).
+- Em rejeição, o sistema usa fallback por regras.
 
-- IA é usada **apenas após** os fluxos determinísticos (onboarding/agendamento/cancelamento/handoff).
-- IA não marca horário sozinha.
-- Respostas da IA passam por validação de lastro:
-  - sem slots no contexto, respostas com horário inventado são rejeitadas;
-  - sem promoção ativa, respostas promocionais inventadas são rejeitadas.
-- Quando IA falha (timeout/erro HTTP/parsing), fallback para resposta por regras.
+## Testes
 
-## Testes automatizados
-
-Rodar toda suíte:
+Rodar tudo:
 
 ```bash
 pytest -q
 ```
 
-Rodar apenas testes da IA:
+Rodar apenas IA:
 
 ```bash
 pytest -q tests/test_ai_layer.py
 ```
 
-Cobertura de IA:
-- IA desligada,
-- falha/timeout OpenAI,
-- montagem de contexto real,
-- bloqueio de resposta potencialmente inventada,
-- resposta útil em dúvida genérica.
+Casos cobertos na IA:
+- Gemini desligada,
+- falha/timeout,
+- contexto real,
+- bloqueio de resposta inventada,
+- dúvida genérica,
+- sem chave Gemini.
 
-## Limitações atuais da IA
-- Não há tabela de promoções no banco (contexto envia lista vazia quando não existir promoção cadastrada).
-- Validação anti-alucinação é heurística (conservadora), não prova formal.
-- IA é complementar, não substitui fluxos críticos do sistema.
+## Limitações atuais
+
+- Promoções ainda não têm tabela dedicada no banco (contexto pode vir vazio).
+- Validação anti-alucinação é heurística conservadora.
