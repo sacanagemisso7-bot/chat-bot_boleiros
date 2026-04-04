@@ -1,52 +1,99 @@
-# Chatbot de WhatsApp para Barbearia (Meta WhatsApp Cloud API)
+# Chatbot WhatsApp para Barbearia (MVP)
 
-Projeto base de chatbot para WhatsApp com respostas personalizadas usando dados já existentes de clientes, integrado diretamente com a **API oficial da Meta**.
+MVP em **Python + FastAPI + SQLite** com **Meta WhatsApp Cloud API** e camada de IA opcional via **Gemini**.
 
-## O que esse bot faz
-- Recebe eventos no webhook `POST /webhook`.
-- Faz a verificação de webhook no `GET /webhook`.
-- Busca cliente por telefone no SQLite.
-- Responde de forma personalizada com nome, preferência de corte e barbeiro favorito.
-- Sugere manutenção com base na data do último corte.
-- Informa próximo agendamento, sugere horários e ofertas.
-- Envia a resposta para o cliente usando `/{PHONE_NUMBER_ID}/messages` da Graph API.
+## Estrutura
 
-## Stack
-- Python + FastAPI
-- SQLite
-- Meta WhatsApp Cloud API
+```text
+.
+├── app.py
+├── db.py
+├── services/
+│   ├── ai.py
+│   ├── ai_context.py
+│   ├── ai_prompt.py
+│   ├── chatbot.py
+│   ├── meta.py
+│   ├── onboarding.py
+│   └── scheduler.py
+├── tests/
+│   ├── conftest.py
+│   ├── test_chatbot_flows.py
+│   └── test_ai_layer.py
+├── .env.example
+├── requirements.txt
+└── README.md
+```
 
-## Como rodar
+## Rodando localmente
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-python seed_clientes.py
+python seed_clientes.py --reset
 uvicorn app:app --reload --port 8000
 ```
 
-## Configuração na Meta
-1. Crie um app no Meta for Developers e habilite WhatsApp.
+## Configuração da Gemini
+
+1. Gere chave em **Google AI Studio** (Gemini API key).
 2. Configure no `.env`:
-   - `META_VERIFY_TOKEN`
-   - `META_WHATSAPP_TOKEN`
-   - `META_PHONE_NUMBER_ID`
-3. Opcional (produção):
-   - `META_VALIDATE_SIGNATURE=true`
-   - `META_APP_SECRET` para validar `X-Hub-Signature-256`
-4. Configure webhook na Meta para:
-   - `GET/POST https://SEU_DOMINIO/webhook`
+   - `GEMINI_ENABLED=true`
+   - `GEMINI_API_KEY=<sua_chave>`
+   - `GEMINI_MODEL=gemini-2.5-flash` (ou outro)
+   - `GEMINI_TIMEOUT_SECONDS=20`
+   - `GEMINI_MAX_CONTEXT_MESSAGES=8`
+   - `GEMINI_TEMPERATURE=0.2`
 
-## Exemplo de uso
-Mensagem do cliente: `quero agendar`
+Se `GEMINI_ENABLED=false` (ou sem chave), o bot segue em fallback determinístico por regras.
 
-Resposta:
-- Se já houver horário confirmado: informa data/hora e oferece remarcação.
-- Se não houver: sugere janela de horários.
+## Como a IA funciona sem quebrar fluxos críticos
 
-## Próximos passos para produção
-- Integrar com seu CRM/ERP em vez de SQLite.
-- Guardar histórico de conversa.
-- Implementar confirmação automática de agenda por IA.
-- Disparar campanhas segmentadas (aniversariantes, clientes inativos, etc.).
+- Onboarding, agendamento, escolha de slot, confirmação, cancelamento e handoff humano continuam determinísticos.
+- A Gemini é usada apenas em dúvidas abertas/complementares.
+- Se a Gemini falhar (timeout/erro), o bot cai no fallback sem quebrar webhook.
+
+## Contexto real enviado para Gemini
+
+A função `build_ai_context(...)` envia contexto estruturado com dados reais:
+- perfil do cliente,
+- estado da conversa,
+- histórico recente,
+- próximo/últimos agendamentos,
+- slots reais disponíveis,
+- promoções reais (ou vazio quando não houver).
+
+## Guardrails anti-invenção
+
+- Prompt reforça que a IA não pode inventar dados.
+- Respostas são rejeitadas quando não há lastro no contexto (ex.: sugerir horário sem slots ou promoção sem promo ativa).
+- Em rejeição, o sistema usa fallback por regras.
+
+## Testes
+
+Rodar tudo:
+
+```bash
+pytest -q
+```
+
+Rodar apenas IA:
+
+```bash
+pytest -q tests/test_ai_layer.py
+```
+
+Casos cobertos na IA:
+- Gemini desligada,
+- falha/timeout,
+- contexto real,
+- bloqueio de resposta inventada,
+- dúvida genérica,
+- sem chave Gemini.
+
+## Limitações atuais
+
+- Promoções ainda não têm tabela dedicada no banco (contexto pode vir vazio).
+- Validação anti-alucinação é heurística conservadora.
