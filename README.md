@@ -21,20 +21,13 @@ MVP funcional em **Python + FastAPI + SQLite** integrado com **Meta WhatsApp Clo
 │   ├── meta.py
 │   ├── onboarding.py
 │   └── scheduler.py
+├── tests/
+│   ├── conftest.py
+│   └── test_chatbot_flows.py
 ├── .env.example
 ├── requirements.txt
 └── README.md
 ```
-
-## Banco de dados
-
-Tabelas principais:
-- `clientes`
-- `agendamentos`
-- `mensagens`
-- `eventos_webhook`
-- `disponibilidade`
-- `conversa_estado`
 
 ## Instalação e execução local
 
@@ -49,11 +42,6 @@ uvicorn app:app --reload --port 8000
 
 Healthcheck:
 - `GET /health`
-
-Endpoints úteis locais:
-- `GET /debug/clientes`
-- `GET /debug/slots`
-- `GET /debug/mensagens?telefone=5511999991111`
 
 ## Variáveis de ambiente
 
@@ -75,7 +63,10 @@ Endpoints úteis locais:
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL` (default `gpt-5.4-mini`)
 
-Se `OPENAI_ENABLED=false`, o bot funciona 100% via regras e estados.
+### Endpoints de debug
+- `DEBUG_ENDPOINTS_ENABLED=true|false`
+- Se `true`: habilita `/debug/clientes`, `/debug/slots`, `/debug/mensagens`
+- Se `false`: endpoints retornam `404` (recomendado em produção)
 
 ## Configuração da Meta (passo a passo)
 
@@ -90,6 +81,33 @@ Se `OPENAI_ENABLED=false`, o bot funciona 100% via regras e estados.
    - `META_VALIDATE_SIGNATURE=true`
    - `META_APP_SECRET=<app secret>`
 
+## Fluxo de escolha de slots (corrigido)
+
+O bot agora salva no estado conversacional os **IDs exatos e ordenados** dos slots exibidos (`slots_ids`).
+Quando o cliente responde `1`, `2`, `3`..., o sistema mapeia para esse ID salvo (sem recalcular posição em lista nova).
+
+Se o slot escolhido tiver ficado indisponível entre a listagem e a confirmação, o bot:
+1. informa que o horário foi ocupado,
+2. atualiza o estado com uma nova lista real,
+3. reapresenta as novas opções.
+
+## Testes automatizados
+
+Rodar testes:
+
+```bash
+pytest -q
+```
+
+Cobertura mínima implementada:
+- onboarding de cliente novo,
+- agendamento com validação por `slots_ids` salvos,
+- cancelamento,
+- deduplicação de webhook por ID da Meta,
+- proteção de endpoints debug quando desabilitados.
+
+Os testes usam banco isolado temporário e mock das chamadas externas da Meta.
+
 ## Teste local com túnel (ngrok)
 
 ```bash
@@ -98,60 +116,13 @@ ngrok http 8000
 
 Use a URL HTTPS gerada no webhook da Meta.
 
-## Fluxos implementados
-
-### 1) Onboarding
-- Telefone novo: cria cliente com `onboarding_status=aguardando_nome`.
-- Bot pede nome.
-- Ao receber nome válido: salva nome, ativa cadastro e oferece opções.
-
-### 2) Agendamento real
-- Intenção de agendar/remarcar: busca slots da tabela `disponibilidade`.
-- Cliente responde com número da opção.
-- Bot confirma, cria `agendamentos` e marca slot como indisponível.
-- Cancelamento: muda status do agendamento e libera slot.
-
-### 3) Handoff humano
-- Detecta termos como `humano`, `atendente`, `pessoa`.
-- Marca `atendimento_humano=true` em `conversa_estado`.
-- Enquanto ativo, bot para automações e mantém somente resposta de encaminhamento.
-
-### 4) Histórico e idempotência
-- Mensagens inbound/outbound salvas em `mensagens`.
-- `meta_message_id` armazenado quando disponível.
-- Payload bruto salvo em `eventos_webhook`.
-- Eventos/mensagens duplicadas são ignorados por chave única.
-
-## Como testar rapidamente
-
-### Onboarding
-1. Envie mensagem de número não cadastrado (ex.: "oi").
-2. Bot pede nome.
-3. Envie "Gustavo".
-4. Verifique `GET /debug/clientes` e `GET /debug/mensagens`.
-
-### Agendamento
-1. Envie "quero agendar".
-2. Escolha opção numérica retornada.
-3. Verifique `agendamentos` e `disponibilidade` via SQLite ou endpoints debug.
-
-### Sem IA
-- `OPENAI_ENABLED=false`
-- Mensagens de fallback seguem regras internas.
-
-### Com IA
-- `OPENAI_ENABLED=true` + `OPENAI_API_KEY` válido.
-- IA só atua em fallback e deve respeitar contexto real.
-
 ## Limitações atuais (MVP)
 - Apenas mensagens de texto.
 - Sem painel web para atendente humano.
-- Sem autenticação dos endpoints `/debug/*` (uso local).
 - Sem filas/retry assíncrono para envio Meta.
 
 ## Próximos passos (produção)
 - Autenticar/ocultar endpoints internos.
 - Adicionar fila (Celery/RQ) para resiliência de envio.
 - Observabilidade (logs estruturados + tracing).
-- Políticas de reprocessamento e dead-letter para webhook.
 - Painel para operação humana e auditoria.

@@ -25,9 +25,15 @@ logger = logging.getLogger("barbearia-bot")
 
 app = FastAPI(title="Barbershop WhatsApp Bot (Meta Cloud API)")
 META_VERIFY_TOKEN = os.getenv("META_VERIFY_TOKEN", "")
+DEBUG_ENDPOINTS_ENABLED = os.getenv("DEBUG_ENDPOINTS_ENABLED", "false").lower() == "true"
 
 chatbot = ChatbotService()
 scheduler = SchedulerService()
+
+
+def _ensure_debug_enabled() -> None:
+    if not DEBUG_ENDPOINTS_ENABLED:
+        raise HTTPException(status_code=404, detail="Not Found")
 
 
 @app.on_event("startup")
@@ -96,6 +102,7 @@ async def receive_webhook(
 
 @app.get("/debug/clientes")
 def debug_clientes(limit: int = 30):
+    _ensure_debug_enabled()
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM clientes ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [dict(row) for row in rows]
@@ -103,11 +110,13 @@ def debug_clientes(limit: int = 30):
 
 @app.get("/debug/slots")
 def debug_slots(limit: int = 20):
+    _ensure_debug_enabled()
     return [dict(r) for r in scheduler.list_available_slots(limit=limit)]
 
 
 @app.get("/debug/mensagens")
 def debug_mensagens(telefone: str, limit: int = 15):
+    _ensure_debug_enabled()
     return [dict(r) for r in list_recent_messages(normalizar_numero(telefone), limit=limit)]
 
 

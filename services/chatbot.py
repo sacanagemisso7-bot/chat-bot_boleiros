@@ -39,11 +39,7 @@ class ChatbotService:
     @staticmethod
     def _extract_name(text: str) -> str:
         nome = text.strip()
-        if len(nome) < 2:
-            return ""
-        if len(nome.split()) > 4:
-            return ""
-        if any(ch.isdigit() for ch in nome):
+        if len(nome) < 2 or len(nome.split()) > 4 or any(ch.isdigit() for ch in nome):
             return ""
         return nome.title()
 
@@ -53,6 +49,23 @@ class ChatbotService:
             role = "user" if msg["direcao"] == "in" else "assistant"
             history.append({"role": role, "content": msg["mensagem"]})
         return history
+
+    def _prepare_slots_state(self, cliente_id: int, intent: str) -> str:
+        slots = self.scheduler.list_available_slots(limit=5)
+        if not slots:
+            save_conversa_estado(cliente_id, "idle", {})
+            return "No momento não há horários livres próximos. Posso te encaminhar para um atendente humano."
+
+        estado_nome = "aguardando_slot_remarcar" if intent == "remarcar" else "aguardando_slot_agendar"
+        save_conversa_estado(
+            cliente_id,
+            estado_nome,
+            {
+                "slots_ids": [s["id"] for s in slots],
+                "slots_view": self.scheduler.format_slots(slots),
+            },
+        )
+        return self.scheduler.format_slots(slots)
 
     def handle_message(self, phone: str, inbound_text: str) -> str:
         cliente = get_cliente_by_phone(phone)
@@ -82,7 +95,6 @@ class ChatbotService:
             return "Para continuar seu cadastro, me diga seu nome (ex: Gustavo Silva)."
 
         intent = self._detect_intent(inbound_text)
-
         if intent == "humano":
             set_cliente_handoff(cliente["id"], True)
             return "Certo, vou encaminhar seu atendimento para um atendente humano."
@@ -91,17 +103,22 @@ class ChatbotService:
         dados = estado["dados"]
 
         if conv_state in {"aguardando_slot_agendar", "aguardando_slot_remarcar"}:
-            slots = self.scheduler.list_available_slots(limit=5)
-            slot = self.scheduler.parse_slot_choice(inbound_text, slots)
-            if not slot:
+            slot_ids = [int(sid) for sid in dados.get("slots_ids", []) if str(sid).isdigit()]
+            chosen_slot_id = self.scheduler.parse_choice_to_slot_id(inbound_text, slot_ids)
+            if not chosen_slot_id:
                 return "Não consegui identificar a opção. Responda com o número do horário desejado."
 
-            if conv_state == "aguardando_slot_remarcar":
-                self.scheduler.cancel_next_appointment(cliente["id"])
-            ag = self.scheduler.book_slot(cliente["id"], slot["id"])
-            save_conversa_estado(cliente["id"], "idle", {})
+            ag = self.scheduler.book_slot(cliente["id"], chosen_slot_id)
             if not ag:
-                return "Esse horário acabou de ficar indisponível. Quer que eu te mostre novas opções?"
+                # Slot ficou indisponível após a lista ser mostrada. Recarrega opções e atualiza estado.
+                aviso = "Esse horário acabou de ser ocupado. Vou te mostrar novas opções reais:\n"
+                return aviso + self._prepare_slots_state(cliente["id"], "agendar")
+
+            if conv_state == "aguardando_slot_remarcar":
+                # cancela qualquer agendamento futuro que não seja o recém criado
+                self.scheduler.cancel_other_future_appointments(cliente["id"], ag["id"])
+
+            save_conversa_estado(cliente["id"], "idle", {})
             dt = datetime.fromisoformat(ag["data_hora"]).strftime("%d/%m às %H:%M")
             return f"Agendamento confirmado para {dt}. Te esperamos na barbearia! ✂️"
 
@@ -112,12 +129,7 @@ class ChatbotService:
             return "Você não tem agendamento confirmado para cancelar no momento."
 
         if intent in {"agendar", "remarcar"}:
-            slots = self.scheduler.list_available_slots(limit=5)
-            if not slots:
-                return "No momento não há horários livres próximos. Posso te encaminhar para um atendente humano."
-            estado_nome = "aguardando_slot_remarcar" if intent == "remarcar" else "aguardando_slot_agendar"
-            save_conversa_estado(cliente["id"], estado_nome, {"slots_ids": [s["id"] for s in slots]})
-            return self.scheduler.format_slots(slots)
+            return self._prepare_slots_state(cliente["id"], intent)
 
         if intent == "promocao":
             return "Promoção atual: combo corte + barba com 10% no pagamento via PIX até sexta-feira."
@@ -131,7 +143,6 @@ class ChatbotService:
             nome_curto = (cliente["nome"] or "cliente").split()[0]
             return f"Olá, {nome_curto}! Posso te ajudar com agendamento, remarcação, cancelamento, promoções ou atendimento humano."
 
-        # fallback opcional com IA
         history = self._history_for_ai(phone)
         context = (
             "Dados permitidos: horários só via tabela disponibilidade, promoção atual combo corte+barba 10% PIX, "
