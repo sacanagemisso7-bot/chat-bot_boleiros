@@ -231,3 +231,42 @@ def save_webhook_event(meta_event_id: Optional[str], payload: dict[str, Any]) ->
             return True
         except sqlite3.IntegrityError:
             return False
+
+
+def get_next_agendamento(cliente_id: int):
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM agendamentos
+            WHERE cliente_id = ? AND status = 'confirmado' AND datetime(data_hora) >= datetime('now')
+            ORDER BY datetime(data_hora) ASC
+            LIMIT 1
+            """,
+            (cliente_id,),
+        ).fetchone()
+
+
+def list_recent_agendamentos(cliente_id: int, limit: int = 3) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM agendamentos
+            WHERE cliente_id = ?
+            ORDER BY datetime(data_hora) DESC
+            LIMIT ?
+            """,
+            (cliente_id, limit),
+        ).fetchall()
+
+
+def list_available_slots(limit: int = 5) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM disponibilidade
+            WHERE disponivel = 1 AND datetime(data_hora) >= datetime('now')
+            ORDER BY datetime(data_hora) ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()

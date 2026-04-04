@@ -1,13 +1,9 @@
 from datetime import datetime
+import os
 
-from db import (
-    get_cliente_by_phone,
-    get_conversa_estado,
-    list_recent_messages,
-    save_conversa_estado,
-    set_cliente_handoff,
-)
+from db import get_cliente_by_phone, get_conversa_estado, save_conversa_estado, set_cliente_handoff
 from services.ai import AIService
+from services.ai_context import build_ai_context
 from services.onboarding import OnboardingService
 from services.scheduler import SchedulerService
 
@@ -42,13 +38,6 @@ class ChatbotService:
         if len(nome) < 2 or len(nome.split()) > 4 or any(ch.isdigit() for ch in nome):
             return ""
         return nome.title()
-
-    def _history_for_ai(self, telefone: str) -> list[dict[str, str]]:
-        history = []
-        for msg in list_recent_messages(telefone, limit=8):
-            role = "user" if msg["direcao"] == "in" else "assistant"
-            history.append({"role": role, "content": msg["mensagem"]})
-        return history
 
     def _prepare_slots_state(self, cliente_id: int, intent: str) -> str:
         slots = self.scheduler.list_available_slots(limit=5)
@@ -110,12 +99,10 @@ class ChatbotService:
 
             ag = self.scheduler.book_slot(cliente["id"], chosen_slot_id)
             if not ag:
-                # Slot ficou indisponível após a lista ser mostrada. Recarrega opções e atualiza estado.
                 aviso = "Esse horário acabou de ser ocupado. Vou te mostrar novas opções reais:\n"
                 return aviso + self._prepare_slots_state(cliente["id"], "agendar")
 
             if conv_state == "aguardando_slot_remarcar":
-                # cancela qualquer agendamento futuro que não seja o recém criado
                 self.scheduler.cancel_other_future_appointments(cliente["id"], ag["id"])
 
             save_conversa_estado(cliente["id"], "idle", {})
@@ -143,12 +130,10 @@ class ChatbotService:
             nome_curto = (cliente["nome"] or "cliente").split()[0]
             return f"Olá, {nome_curto}! Posso te ajudar com agendamento, remarcação, cancelamento, promoções ou atendimento humano."
 
-        history = self._history_for_ai(phone)
-        context = (
-            "Dados permitidos: horários só via tabela disponibilidade, promoção atual combo corte+barba 10% PIX, "
-            "ações válidas: agendar, remarcar, cancelar, humano."
-        )
-        ai_reply = self.ai.generate_reply(inbound_text, context, history)
+        # IA apenas como complemento em dúvidas gerais após fluxos determinísticos.
+        max_ctx = int(os.getenv("OPENAI_MAX_CONTEXT_MESSAGES", "8"))
+        ai_context = build_ai_context(cliente, phone, max_history=max_ctx)
+        ai_reply = self.ai.generate_reply(inbound_text, ai_context)
         if ai_reply:
             return ai_reply
 
