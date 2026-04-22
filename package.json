@@ -1,0 +1,17 @@
+{
+  "name": "chat-bot-boleiros",
+  "version": "1.0.0",
+  "description": "Chatbot de WhatsApp para barbearia usando Twilio, Express e SQLite",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "node app.js",
+    "seed": "node seed_clientes.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "sqlite3": "^5.1.7",
+    "twilio": "^5.10.6"
+  }
+}
