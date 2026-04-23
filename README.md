@@ -1,20 +1,21 @@
-# Chatbot de WhatsApp para Barbearia (Twilio)
+# Chatbot de WhatsApp para Barbearia (Meta Cloud API)
 
-Projeto base de chatbot para WhatsApp com respostas personalizadas usando dados já existentes de clientes, integrado via **Twilio WhatsApp API**.
+Projeto de chatbot para WhatsApp com respostas personalizadas usando base de clientes em SQLite e integração com **WhatsApp Cloud API (Meta Graph API)**.
 
 ## O que esse bot faz
-- Recebe mensagens no webhook `POST /whatsapp`.
+- Recebe mensagens no webhook `POST /webhook` (padrão Meta).
+- Faz validação do webhook em `GET /webhook` com `hub.verify_token`.
 - Busca cliente por telefone no SQLite.
 - Responde de forma personalizada com nome, preferência de corte e barbeiro favorito.
 - Sugere manutenção com base na data do último corte.
-- Informa próximo agendamento, permite solicitar **remarcação** e sugere horários.
+- Permite solicitar **remarcação** e marca o agendamento como `remarcacao_solicitada`.
 - Salva histórico de mensagens (entrada/saída) por cliente.
-- Retorna resposta em TwiML para o Twilio entregar no WhatsApp.
+- Envia mensagem de teste para o número de destino configurado.
 
 ## Stack
 - JavaScript (Node.js + Express)
 - SQLite
-- Twilio WhatsApp API (Webhook + TwiML)
+- WhatsApp Cloud API (Meta)
 
 ## Como rodar
 ```bash
@@ -26,40 +27,30 @@ npm run dev
 
 Servidor padrão: `http://localhost:8000`
 
-## Configuração Twilio
-1. Ative WhatsApp Sandbox no Twilio.
-2. Configure o webhook de entrada para:
-   - `POST https://SEU_DOMINIO/whatsapp`
-3. Se quiser validação da assinatura do Twilio:
-   - defina `TWILIO_VALIDATE_REQUESTS=true`
-   - preencha `TWILIO_AUTH_TOKEN` no `.env`
-
 ## Variáveis de ambiente
-- `PORT`: porta HTTP da aplicação.
-- `DB_PATH`: caminho do banco SQLite.
-- `TWILIO_AUTH_TOKEN`: token para validar assinatura da Twilio.
-- `TWILIO_VALIDATE_REQUESTS`: habilita/desabilita validação da assinatura.
+- `WHATSAPP_TOKEN`: token de acesso do app Meta.
+- `WHATSAPP_PHONE_NUMBER_ID`: ID do número de telefone do WhatsApp Cloud API.
+- `WHATSAPP_BUSINESS_ID`: ID da business account.
+- `WHATSAPP_VERIFY_TOKEN`: token de verificação do webhook.
+- `NUMERO_TESTE`: número de referência interna para teste.
+- `NUMERO_DESTINATARIO`: número para disparo de teste.
 - `JANELA_HORARIOS`: texto padrão com janela sugerida de horários.
 
-## Endpoints úteis
+## Endpoints
 - `GET /health`
-- `POST /whatsapp`
-- `GET /clientes/:telefone/historico?limit=20` (retorna histórico de conversa salvo)
+- `GET /webhook` (verificação Meta)
+- `POST /webhook` (mensagens recebidas)
+- `POST /send-test` (envia uma mensagem de teste)
+- `GET /clientes/:telefone/historico?limit=20` (histórico de conversa)
 
-## Exemplo de uso
-Mensagem do cliente: `quero agendar`
+## Configuração Meta (Webhook)
+1. No painel Meta Developers, configure o webhook para apontar para:
+   - `GET/POST https://SEU_DOMINIO/webhook`
+2. Use o mesmo valor de `WHATSAPP_VERIFY_TOKEN` na configuração do webhook.
+3. Garanta que o app tenha permissão para enviar mensagens no número `WHATSAPP_PHONE_NUMBER_ID`.
 
-Resposta:
-- Se já houver horário confirmado: informa data/hora e oferece remarcação.
-- Se não houver: sugere janela de horários.
-
-Mensagem do cliente: `remarcar`
-
-Resposta:
-- Marca agendamento atual como `remarcacao_solicitada` e inicia fluxo de nova sugestão.
-
-## Próximos passos para produção
-- [ ] Integrar com seu CRM/ERP em vez de SQLite.
-- [x] Guardar histórico de conversa.
-- [ ] Implementar confirmação automática de agenda por IA.
-- [ ] Disparar campanhas segmentadas (aniversariantes, clientes inativos, etc.).
+## Exemplo rápido de fluxo
+- Cliente envia: `quero agendar`
+- Bot responde com horário existente ou janela disponível.
+- Cliente envia: `remarcar`
+- Bot muda status do agendamento para `remarcacao_solicitada` e sugere nova janela.

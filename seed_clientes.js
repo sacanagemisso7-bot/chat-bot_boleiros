@@ -43,6 +43,7 @@ db.serialize(() => {
       telefone TEXT NOT NULL,
       direcao TEXT NOT NULL CHECK (direcao IN ('entrada', 'saida')),
       conteudo TEXT NOT NULL,
+      provider_message_id TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (cliente_id) REFERENCES clientes(id)
     )

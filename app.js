@@ -1,7 +1,5 @@
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
-const { MessagingResponse } = require('twilio').twiml;
-const twilio = require('twilio');
 require('dotenv').config();
 
 const app = express();
@@ -9,9 +7,19 @@ app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
 const DB_PATH = process.env.DB_PATH || 'barbearia.db';
-const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || '';
-const TWILIO_VALIDATE_REQUESTS = (process.env.TWILIO_VALIDATE_REQUESTS || 'false').toLowerCase() === 'true';
+const PORT = Number(process.env.PORT || 8000);
+
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || '';
+const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '1047204661812681';
+const WHATSAPP_BUSINESS_ID = process.env.WHATSAPP_BUSINESS_ID || '1972894139980996';
+const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || 'verify_token_boleiros';
+const NUMERO_TESTE = process.env.NUMERO_TESTE || '+15556327882';
+const NUMERO_DESTINATARIO = process.env.NUMERO_DESTINATARIO || '+5542999845078';
 const JANELA_HORARIOS = process.env.JANELA_HORARIOS || 'amanhã entre 10h e 19h';
+
+function limparNumero(numero = '') {
+  return numero.replace(/[\s()-]/g, '');
+}
 
 function withDb(callback) {
   const db = new sqlite3.Database(DB_PATH);
@@ -76,6 +84,7 @@ function initDb() {
           telefone TEXT NOT NULL,
           direcao TEXT NOT NULL CHECK (direcao IN ('entrada', 'saida')),
           conteudo TEXT NOT NULL,
+          provider_message_id TEXT,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (cliente_id) REFERENCES clientes(id)
         )
@@ -152,14 +161,14 @@ function marcarAgendamentoComoRemarcacao(clienteId) {
   });
 }
 
-function salvarMensagem({ clienteId = null, telefone, direcao, conteudo }) {
+function salvarMensagem({ clienteId = null, telefone, direcao, conteudo, providerMessageId = null }) {
   return new Promise((resolve, reject) => {
     withDb(async (db) => {
       try {
         await run(
           db,
-          `INSERT INTO mensagens (cliente_id, telefone, direcao, conteudo) VALUES (?, ?, ?, ?)`,
-          [clienteId, telefone, direcao, conteudo],
+          `INSERT INTO mensagens (cliente_id, telefone, direcao, conteudo, provider_message_id) VALUES (?, ?, ?, ?, ?)`,
+          [clienteId, telefone, direcao, conteudo, providerMessageId],
         );
         db.close();
         resolve();
@@ -178,7 +187,7 @@ function listarHistoricoPorTelefone(telefone, limit = 20) {
         const rows = await all(
           db,
           `
-            SELECT id, telefone, direcao, conteudo, created_at
+            SELECT id, telefone, direcao, conteudo, provider_message_id, created_at
             FROM mensagens
             WHERE telefone = ?
             ORDER BY datetime(created_at) DESC
@@ -200,24 +209,14 @@ function getRecomendacao(cliente) {
   const ultimo = cliente.ultimo_corte;
   const pref = cliente.preferencia || 'corte social';
 
-  if (!ultimo) {
-    return `Posso te recomendar um ${pref} com acabamento na navalha.`;
-  }
+  if (!ultimo) return `Posso te recomendar um ${pref} com acabamento na navalha.`;
 
   const dataUltimo = new Date(ultimo);
-  if (Number.isNaN(dataUltimo.getTime())) {
-    return `Quer repetir seu último estilo (${pref}) ou testar um degradê moderno?`;
-  }
+  if (Number.isNaN(dataUltimo.getTime())) return `Quer repetir seu último estilo (${pref}) ou testar um degradê moderno?`;
 
-  const diffMs = Date.now() - dataUltimo.getTime();
-  const dias = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-  if (dias >= 30) {
-    return 'Já passou do tempo ideal de manutenção. Quer agendar para esta semana?';
-  }
-  if (dias >= 15) {
-    return 'Seu corte está na janela perfeita para manutenção leve.';
-  }
+  const dias = Math.floor((Date.now() - dataUltimo.getTime()) / (1000 * 60 * 60 * 24));
+  if (dias >= 30) return 'Já passou do tempo ideal de manutenção. Quer agendar para esta semana?';
+  if (dias >= 15) return 'Seu corte está na janela perfeita para manutenção leve.';
   return 'Seu visual ainda está em dia. Posso já deixar um horário reservado para a próxima quinzena.';
 }
 
@@ -227,8 +226,7 @@ async function mensagemPersonalizada(phone, body) {
 
   if (!cliente) {
     return {
-      texto:
-        'Olá! 👋 Sou o assistente da barbearia. Ainda não encontrei seu cadastro. Me diga seu *nome* para eu iniciar seu atendimento personalizado.',
+      texto: 'Olá! 👋 Sou o assistente da barbearia. Ainda não encontrei seu cadastro. Me diga seu *nome* para eu iniciar seu atendimento personalizado.',
       clienteId: null,
     };
   }
@@ -269,30 +267,139 @@ async function mensagemPersonalizada(phone, body) {
 
   if (texto.includes('promo') || texto.includes('promoção')) {
     return {
-      texto:
-        `${nome}, com base no seu perfil, temos combo de ${cliente.preferencia || 'corte + barba'} ` +
-        'com 15% de desconto até sexta. Quer garantir?',
+      texto: `${nome}, com base no seu perfil, temos combo de ${cliente.preferencia || 'corte + barba'} com 15% de desconto até sexta. Quer garantir?`,
       clienteId: cliente.id,
     };
   }
 
   return {
-    texto:
-      `Fala, ${nome}! ✂️ ${recomendacao} ` +
-      `Seu barbeiro favorito é ${cliente.barbeiro_favorito || 'qualquer profissional da casa'}. ` +
-      'Posso te ajudar com *agendar*, *remarcar* ou *promoção* hoje.',
+    texto: `Fala, ${nome}! ✂️ ${recomendacao} Seu barbeiro favorito é ${cliente.barbeiro_favorito || 'qualquer profissional da casa'}. Posso te ajudar com *agendar*, *remarcar* ou *promoção* hoje.`,
     clienteId: cliente.id,
   };
 }
 
-function validarAssinaturaTwilio(requestUrl, formData, signature) {
-  if (!TWILIO_VALIDATE_REQUESTS) return true;
-  if (!TWILIO_AUTH_TOKEN) return false;
-  return twilio.validateRequest(TWILIO_AUTH_TOKEN, signature, requestUrl, formData);
+async function enviarMensagemWhatsApp(destino, texto) {
+  if (!WHATSAPP_TOKEN) {
+    throw new Error('WHATSAPP_TOKEN não configurado');
+  }
+
+  const endpoint = `https://graph.facebook.com/v22.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
+  const payload = {
+    messaging_product: 'whatsapp',
+    to: limparNumero(destino),
+    type: 'text',
+    text: { body: texto },
+  };
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(`Erro Meta API: ${response.status} - ${JSON.stringify(data)}`);
+  }
+
+  return data;
+}
+
+function extrairMensagemWhatsApp(payload) {
+  try {
+    const entry = payload.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    const message = value?.messages?.[0];
+    if (!message) return null;
+
+    return {
+      from: limparNumero(message.from),
+      body: message.text?.body || '',
+      messageId: message.id || null,
+    };
+  } catch (_e) {
+    return null;
+  }
 }
 
 app.get('/health', (_req, res) => {
-  res.type('text/plain').send('ok');
+  res.json({
+    status: 'ok',
+    provider: 'meta_whatsapp_cloud_api',
+    businessId: WHATSAPP_BUSINESS_ID,
+    phoneNumberId: WHATSAPP_PHONE_NUMBER_ID,
+  });
+});
+
+app.get('/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === WHATSAPP_VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
+
+  return res.sendStatus(403);
+});
+
+app.post('/webhook', async (req, res) => {
+  try {
+    const inbound = extrairMensagemWhatsApp(req.body);
+    if (!inbound) return res.sendStatus(200);
+
+    const fromWhatsApp = `whatsapp:${inbound.from}`;
+    const resposta = await mensagemPersonalizada(fromWhatsApp, inbound.body);
+
+    await salvarMensagem({
+      clienteId: resposta.clienteId,
+      telefone: fromWhatsApp,
+      direcao: 'entrada',
+      conteudo: inbound.body,
+      providerMessageId: inbound.messageId,
+    });
+
+    const envio = await enviarMensagemWhatsApp(inbound.from, resposta.texto);
+    const saidaId = envio?.messages?.[0]?.id || null;
+
+    await salvarMensagem({
+      clienteId: resposta.clienteId,
+      telefone: fromWhatsApp,
+      direcao: 'saida',
+      conteudo: resposta.texto,
+      providerMessageId: saidaId,
+    });
+
+    return res.sendStatus(200);
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ detail: 'Erro interno', error: String(error.message || error) });
+  }
+});
+
+app.post('/send-test', async (_req, res) => {
+  try {
+    const texto = `Teste automático ✅\nOrigem: ${limparNumero(NUMERO_TESTE)}\nDestino: ${limparNumero(NUMERO_DESTINATARIO)}\nData UTC: ${new Date().toISOString()}`;
+    const envio = await enviarMensagemWhatsApp(NUMERO_DESTINATARIO, texto);
+
+    await salvarMensagem({
+      clienteId: null,
+      telefone: `whatsapp:${limparNumero(NUMERO_DESTINATARIO)}`,
+      direcao: 'saida',
+      conteudo: texto,
+      providerMessageId: envio?.messages?.[0]?.id || null,
+    });
+
+    return res.json({ ok: true, envio });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ ok: false, detail: String(error.message || error) });
+  }
 });
 
 app.get('/clientes/:telefone/historico', async (req, res) => {
@@ -307,58 +414,8 @@ app.get('/clientes/:telefone/historico', async (req, res) => {
   }
 });
 
-app.post('/whatsapp', async (req, res) => {
-  try {
-    const from = req.body.From;
-    const body = req.body.Body || '';
-
-    if (!from) {
-      return res.status(400).json({ detail: 'Campo From é obrigatório' });
-    }
-
-    if (TWILIO_VALIDATE_REQUESTS) {
-      const signature = req.header('X-Twilio-Signature');
-      if (!signature) {
-        return res.status(403).json({ detail: 'Assinatura Twilio ausente' });
-      }
-
-      const host = req.get('host');
-      const requestUrl = `${req.protocol}://${host}${req.originalUrl}`;
-      const ok = validarAssinaturaTwilio(requestUrl, { From: from, Body: body }, signature);
-      if (!ok) {
-        return res.status(403).json({ detail: 'Assinatura Twilio inválida' });
-      }
-    }
-
-    const resposta = await mensagemPersonalizada(from, body);
-
-    await salvarMensagem({
-      clienteId: resposta.clienteId,
-      telefone: from,
-      direcao: 'entrada',
-      conteudo: body,
-    });
-
-    await salvarMensagem({
-      clienteId: resposta.clienteId,
-      telefone: from,
-      direcao: 'saida',
-      conteudo: resposta.texto,
-    });
-
-    const twiml = new MessagingResponse();
-    twiml.message(resposta.texto);
-
-    res.type('text/xml').send(twiml.toString());
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ detail: 'Erro interno' });
-  }
-});
-
 initDb();
 
-const PORT = Number(process.env.PORT || 8000);
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Servidor rodando na porta ${PORT}`);
 });
